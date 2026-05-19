@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 const ZHIPU_KEY = process.env.ZHIPU_API_KEY!;
 const BASE_URL = 'https://open.bigmodel.cn/api/paas/v4';
 
-// 通用文本调用函数 (加了防撞垫)
+// 通用文本调用函数 (修复：移除写死的 max_tokens)
 async function callGLM(messages: any[], model = 'glm-4-flash') {
   const res = await fetch(`${BASE_URL}/chat/completions`, {
     method: 'POST',
@@ -11,11 +11,11 @@ async function callGLM(messages: any[], model = 'glm-4-flash') {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${ZHIPU_KEY}`,
     },
-    body: JSON.stringify({ model, messages, max_tokens: 1500 }),
+    // 💥 修复2：去掉 max_tokens，避免因为不同模型上限不同导致的参数报错
+    body: JSON.stringify({ model, messages }),
   });
   const data = await res.json();
   
-  // 💥 防撞垫：如果 AI 报错了，直接把错误大声喊出来
   if (data.error) {
     throw new Error(`AI文本接口报错: ${data.error.message}`);
   }
@@ -26,18 +26,23 @@ async function callGLM(messages: any[], model = 'glm-4-flash') {
   return data.choices[0].message.content as string;
 }
 
-// 图像理解（带图片）
+// 图像理解（带图片）(修复：处理双重图片前缀)
 async function analyzeImage(imageBase64: string, mime: string, market: string, event: string, desc: string) {
+  // 💥 修复1：智能判断！如果前端已经传了 data:image... 的前缀，就不要再重复加了
+  const safeImageUrl = imageBase64.startsWith('data:') 
+    ? imageBase64 
+    : `data:${mime};base64,${imageBase64}`;
+
   return callGLM([{
     role: 'user',
     content: [
-      { type: 'image_url', image_url: { url: `data:${mime};base64,${imageBase64}` } },
+      { type: 'image_url', image_url: { url: safeImageUrl } },
       { type: 'text', text: `你是跨境电商产品分析师。分析这张产品图，提取3-5个核心卖点（工艺/材质/特色）。目标市场：${market}，营销节点：${event}。补充描述：${desc || '无'}。输出格式：【卖点1】xxx【卖点2】xxx` }
     ]
   }], 'glm-4v-flash');
 }
 
-// 生成场景图 (加了防撞垫)
+// 生成场景图
 async function generateImage(market: string, event: string, sellingPoints: string) {
   const prompt = `${market}节日场景商业摄影，模特佩戴手工云南扎染耳环，背景为${market}标志性地标，${event}节日氛围，时尚大片风格，卖点：${sellingPoints.substring(0, 50)}，高质量，细节清晰`;
   const res = await fetch(`${BASE_URL}/images/generations`, {
@@ -50,7 +55,6 @@ async function generateImage(market: string, event: string, sellingPoints: strin
   });
   const data = await res.json();
   
-  // 💥 防撞垫：如果画图失败了，拦截它
   if (data.error) {
     throw new Error(`AI画图接口报错: ${data.error.message}`);
   }
@@ -90,7 +94,6 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { imageBase64, imageMime, market, platform, event, desc } = body;
 
-    // 用 SSE（流式）逐步返回进度给前端
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
       async start(controller) {
@@ -123,7 +126,6 @@ export async function POST(req: NextRequest) {
 
           send({ step: 0, status: 'complete' });
         } catch (e: any) {
-          // 💥 前面抛出的错误会在这里被抓住，然后安稳地传给前端
           send({ step: 0, status: 'error', msg: e.message });
         }
 
