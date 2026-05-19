@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 const ZHIPU_KEY = process.env.ZHIPU_API_KEY!;
 const BASE_URL = 'https://open.bigmodel.cn/api/paas/v4';
 
-// 通用文本调用函数
+// 通用文本调用函数 (加了防撞垫)
 async function callGLM(messages: any[], model = 'glm-4-flash') {
   const res = await fetch(`${BASE_URL}/chat/completions`, {
     method: 'POST',
@@ -14,6 +14,15 @@ async function callGLM(messages: any[], model = 'glm-4-flash') {
     body: JSON.stringify({ model, messages, max_tokens: 1500 }),
   });
   const data = await res.json();
+  
+  // 💥 防撞垫：如果 AI 报错了，直接把错误大声喊出来
+  if (data.error) {
+    throw new Error(`AI文本接口报错: ${data.error.message}`);
+  }
+  if (!data.choices || data.choices.length === 0) {
+    throw new Error(`AI返回格式异常，没有找到 choices: ${JSON.stringify(data)}`);
+  }
+  
   return data.choices[0].message.content as string;
 }
 
@@ -28,7 +37,7 @@ async function analyzeImage(imageBase64: string, mime: string, market: string, e
   }], 'glm-4v-flash');
 }
 
-// 生成场景图
+// 生成场景图 (加了防撞垫)
 async function generateImage(market: string, event: string, sellingPoints: string) {
   const prompt = `${market}节日场景商业摄影，模特佩戴手工云南扎染耳环，背景为${market}标志性地标，${event}节日氛围，时尚大片风格，卖点：${sellingPoints.substring(0, 50)}，高质量，细节清晰`;
   const res = await fetch(`${BASE_URL}/images/generations`, {
@@ -40,6 +49,15 @@ async function generateImage(market: string, event: string, sellingPoints: strin
     body: JSON.stringify({ model: 'cogview-3-flash', prompt, n: 1, size: '1024x1024' }),
   });
   const data = await res.json();
+  
+  // 💥 防撞垫：如果画图失败了，拦截它
+  if (data.error) {
+    throw new Error(`AI画图接口报错: ${data.error.message}`);
+  }
+  if (!data.data || data.data.length === 0) {
+    throw new Error(`AI画图返回异常，没有找到图片URL: ${JSON.stringify(data)}`);
+  }
+
   return data.data[0].url as string;
 }
 
@@ -105,6 +123,7 @@ export async function POST(req: NextRequest) {
 
           send({ step: 0, status: 'complete' });
         } catch (e: any) {
+          // 💥 前面抛出的错误会在这里被抓住，然后安稳地传给前端
           send({ step: 0, status: 'error', msg: e.message });
         }
 
