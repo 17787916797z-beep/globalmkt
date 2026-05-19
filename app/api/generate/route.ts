@@ -3,7 +3,10 @@ import { NextRequest, NextResponse } from 'next/server';
 const ZHIPU_KEY = process.env.ZHIPU_API_KEY!;
 const BASE_URL = 'https://open.bigmodel.cn/api/paas/v4';
 
-// 通用文本调用函数 (修复：移除写死的 max_tokens)
+// 🛡️ 新增：保安的“记事本” - 简单限流：每个IP每天最多20次
+const ipCount = new Map<string, {count: number, date: string}>();
+
+// 通用文本调用函数
 async function callGLM(messages: any[], model = 'glm-4-flash') {
   const res = await fetch(`${BASE_URL}/chat/completions`, {
     method: 'POST',
@@ -11,7 +14,6 @@ async function callGLM(messages: any[], model = 'glm-4-flash') {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${ZHIPU_KEY}`,
     },
-    // 💥 修复2：去掉 max_tokens，避免因为不同模型上限不同导致的参数报错
     body: JSON.stringify({ model, messages }),
   });
   const data = await res.json();
@@ -26,9 +28,8 @@ async function callGLM(messages: any[], model = 'glm-4-flash') {
   return data.choices[0].message.content as string;
 }
 
-// 图像理解（带图片）(修复：处理双重图片前缀)
+// 图像理解（带图片）
 async function analyzeImage(imageBase64: string, mime: string, market: string, event: string, desc: string) {
-  // 💥 修复1：智能判断！如果前端已经传了 data:image... 的前缀，就不要再重复加了
   const safeImageUrl = imageBase64.startsWith('data:') 
     ? imageBase64 
     : `data:${mime};base64,${imageBase64}`;
@@ -90,6 +91,19 @@ async function generateTags(market: string, platform: string, event: string, des
 
 // 主接口：POST /api/generate
 export async function POST(req: NextRequest) {
+  // 🛡️ 新增：限流逻辑开始（必须放在调用 AI 之前）
+  const ip = req.headers.get('x-forwarded-for') || 'unknown';
+  const today = new Date().toDateString();
+  const record = ipCount.get(ip);
+
+  if (record && record.date === today && record.count >= 20) {
+    // 发现刷子！直接返回 429 报错，拒绝服务，保护你的钱包！
+    return NextResponse.json({ error: '今日免费生成次数已达上限（20次），请明天再来体验哦！' }, { status: 429 });
+  }
+  // 没超限，给这位客人的今日记录本上 +1 次
+  ipCount.set(ip, { count: (record?.date === today ? record.count : 0) + 1, date: today });
+  // 🛡️ 新增：限流逻辑结束
+
   try {
     const body = await req.json();
     const { imageBase64, imageMime, market, platform, event, desc } = body;
